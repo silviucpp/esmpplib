@@ -60,9 +60,10 @@
 
     socket,
     parser,
-    seq_nr = 1,
-    sar_ref_num = 1,
+    seq_num = 1,
+    ref_num = 1,
     binding_mode,
+
     enquire_link_timer,
     binding_timer
 }).
@@ -93,8 +94,8 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
     binding_mode = BindingMode,
     transport = Transport,
     socket= Socket,
-    seq_nr = SeqNum,
-    sar_ref_num = RefNumber,
+    seq_num = SeqNum,
+    ref_num = RefNumber,
     reply_map = ReplyMap,
     options = Options } = State) ->
 
@@ -107,7 +108,7 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
             case submit_sm_options(SrcAddr, DstAddr, Message, RefNumber, Options) of
                 {ok, SubmitSmOption} ->
                     send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, SeqNum, SubmitSmOption}),
-                    NewState = State#state{seq_nr = get_next_sequence_number(SeqNum), reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap)},
+                    NewState = State#state{seq_num = get_next_sequence_number(SeqNum), reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap)},
                     case Async of
                         true ->
                             {reply, ok, NewState};
@@ -123,7 +124,7 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
                         {get_next_sequence_number(NewSq), NewSq}
                     end, {SeqNum, SeqNum}, SubmitSmListReversed),
 
-                    NewState = State#state{seq_nr = NewSeqNum, sar_ref_num = get_next_ref_num(RefNumber), reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap)},
+                    NewState = State#state{seq_num = NewSeqNum, ref_num = get_next_ref_num(RefNumber), reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap)},
 
                     case Async of
                         true ->
@@ -170,15 +171,15 @@ handle_info({SocketErrorTag, _, Reason}, #state{id = Id} = State) when ?IS_SOCKE
         Error ->
             {stop, Error, State}
     end;
-handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_nr = SeqNum, options = Options} = State) ->
+handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_num = SeqNum, options = Options} = State) ->
     send_command(Transport, Socket, {?COMMAND_ID_ENQUIRE_LINK, ?ESME_ROK, SeqNum, []}),
-    {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_nr = get_next_sequence_number(SeqNum)}};
-handle_info(start_connection, #state{id = Id, transport = Transport, seq_nr = SeqNr, options = Options} = State) ->
+    {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_num = get_next_sequence_number(SeqNum)}};
+handle_info(start_connection, #state{id = Id, transport = Transport, seq_num = SeqNr, options = Options} = State) ->
     case connect_and_bind(Id, Transport, SeqNr, Options) of
         {ok, Socket, NewSq} ->
             ok = Transport:setopts(Socket, [{active,once}]),
             {noreply, State#state{
-                seq_nr = NewSq,
+                seq_num = NewSq,
                 socket = Socket,
                 parser = esmpplib_stream_parser:new(maps:get(max_smpp_packet_size, Options)),
                 binding_timer = schedule_binding_timeout_check(Options)
