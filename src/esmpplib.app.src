@@ -1,0 +1,17 @@
+{application, esmpplib, [
+    {description, "Erlang smpp client library."},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {mod, {esmpplib_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        ranch,
+        tic,
+        smpp_parser,
+        gsm0338,
+        erlpool
+    ]},
+    {env,[]},
+    {modules, []}
+]}.

@@ -1,0 +1,28 @@
+{"1.2.0",
+[{<<"bstr">>,
+  {git,"https://github.com/jcomellas/bstr.git",
+       {ref,"609ba263df6b940b4d7f66ac2768f73ac9e17e0e"}},
+  1},
+ {<<"erlpool">>,{pkg,<<"erlpool">>,<<"1.4.2">>},0},
+ {<<"gsm0338">>,
+  {git,"https://github.com/AntonSizov/gsm0338.git",
+       {ref,"6bca8dbce2baa2381f2cd79176cf00819a63d7ce"}},
+  0},
+ {<<"ranch">>,
+  {git,"https://github.com/ninenines/ranch.git",
+       {ref,"a882739222df0ad73ab0cab24ae620e05f1b5827"}},
+  0},
+ {<<"smpp_parser">>,
+  {git,"https://github.com/silviucpp/smpp_parser.git",
+       {ref,"69b2e6541f2bc5de3092441f6fb3e85f1960894f"}},
+  0},
+ {<<"tic">>,
+  {git,"https://github.com/silviucpp/tic.git",
+       {ref,"b26a77920bf3bc0faec2660bb81bc190f8e9c903"}},
+  0}]}.
+[
+{pkg_hash,[
+ {<<"erlpool">>, <<"D1D1C5244F84B4CDDC6DF26D968AF8E519CA2C4C1F7B3B4CB6F72C4A08F036E2">>}]},
+{pkg_hash_ext,[
+ {<<"erlpool">>, <<"934AF1F88C753CCA54B3BB1A06B5C4113CC1223B019CFA3D50C092E4EE9DDCD7">>}]}
+].
