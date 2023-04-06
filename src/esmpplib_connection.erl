@@ -9,6 +9,7 @@
 -define(IS_SOCKET_CLOSED_TAG(T), T == tcp_closed orelse T == ssl_closed).
 -define(IS_SOCKET_ERROR_TAG(T), T == tcp_error orelse T == ssl_error).
 -define(MAKE_RESPONSE(CmdId), CmdId bor 16#80000000).
+-define(SMPP_SEQ_NUM_MAX, 16#7FFFFFFF).
 -define(IS_BIND_RESPONSE(C), C == ?COMMAND_ID_BIND_RECEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSCEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSMITTER_RESP ).
 
 -define(SOCKET_DEFAULT_OPTIONS, [
@@ -69,7 +70,6 @@
 %todo:
 % - timeout on submit_sm
 % - cache data instead using options lookup
-% - when sending multi part messages sent them in reverse order and ask for dlr on first part only
 % - check dlvrd and sent in dlr
 
 start_link(Options) ->
@@ -107,20 +107,23 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
             case submit_sm_options(SrcAddr, DstAddr, Message, RefNumber, Options) of
                 {ok, SubmitSmOption} ->
                     send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, SeqNum, SubmitSmOption}),
-                    NewState = State#state{seq_nr = SeqNum+1, reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap)},
+                    NewState = State#state{seq_nr = get_next_sequence_number(SeqNum), reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap)},
                     case Async of
                         true ->
                             {reply, ok, NewState};
                         _ ->
                             {noreply, NewState}
                     end;
-                {ok, TotalParts, SubmitSmList} ->
-                    NewSeqNum = lists:foldl(fun(SubmitSmOption, AccSeqNum) ->
-                        send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, AccSeqNum, SubmitSmOption}),
-                        AccSeqNum+1
-                    end, SeqNum, SubmitSmList),
+                {ok, TotalParts, SubmitSmListReversed} ->
+                    % please not the parts here are in reverse order (this is by design)
+                    % we store the last sequence_number which is associated with the first part.
 
-                    NewState = State#state{seq_nr = NewSeqNum, sar_ref_num = ref_num_increase(RefNumber), reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap)},
+                    {NewSeqNum, LastSentSeqNum} = lists:foldl(fun(SubmitSmOption, {NewSq, _} ) ->
+                        send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, NewSq, SubmitSmOption}),
+                        {get_next_sequence_number(NewSq), NewSq}
+                    end, {SeqNum, SeqNum}, SubmitSmListReversed),
+
+                    NewState = State#state{seq_nr = NewSeqNum, sar_ref_num = get_next_ref_num(RefNumber), reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap)},
 
                     case Async of
                         true ->
@@ -169,7 +172,7 @@ handle_info({SocketErrorTag, _, Reason}, #state{id = Id} = State) when ?IS_SOCKE
     end;
 handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_nr = SeqNum, options = Options} = State) ->
     send_command(Transport, Socket, {?COMMAND_ID_ENQUIRE_LINK, ?ESME_ROK, SeqNum, []}),
-    {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_nr = SeqNum+1}};
+    {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_nr = get_next_sequence_number(SeqNum)}};
 handle_info(start_connection, #state{id = Id, transport = Transport, seq_nr = SeqNr, options = Options} = State) ->
     case connect_and_bind(Id, Transport, SeqNr, Options) of
         {ok, Socket, NewSq} ->
@@ -365,7 +368,7 @@ connect_and_bind(Id, Transport, SeqNum, Options) ->
             ?LOG_INFO("connection_id: ~p connection completed: ~p", [Id, Socket]),
             case bind(Transport, Socket, SeqNum, Options) of
                 ok ->
-                    {ok, Socket, SeqNum +1};
+                    {ok, Socket, get_next_sequence_number(SeqNum)};
                 Error ->
                     ?LOG_ERROR("connection_id: ~p failed to send bind with error: ~p", [Id, Error]),
                     Error
@@ -483,13 +486,18 @@ submit_sm_options(SrcAddr, DstAddr, Message, RefNumber, Options) ->
 
                     SrcAddrType = get_address_type(SrcAddr),
                     DstAddrType = get_address_type(DstAddr),
+                    RegisteredDelivery = maps:get(registered_delivery, Options),
 
                     case EncodedMessageLength =< MaxLength of
                         true ->
-                            {ok, submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, ?ESM_CLASS_GSM_NO_FEATURES, DataCoding, EncodedMessageLength, EncodedMessage, Options)};
+                            {ok, submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, ?ESM_CLASS_GSM_NO_FEATURES, DataCoding, EncodedMessageLength, EncodedMessage, RegisteredDelivery, Options)};
                         _ ->
-                            {ok, TotalParts, Parts} = esmpplib_encoding:split_in_parts(RefNumber, EncodedMessage, MaxLength),
-                            {ok, TotalParts, lists:map(fun(Chunk) -> submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, ?ESM_CLASS_GSM_UDHI, DataCoding, byte_size(Chunk), Chunk, Options) end, Parts)}
+                            % we send the parts in the reversed order and ask for dlr (if requested) only on the first part (last sent).
+                            % this way we know the message is properly delivered when first part confirmation arrived.
+                            {ok, TotalParts, [FirstPart|OtherParts]} = esmpplib_encoding:split_in_parts(RefNumber, EncodedMessage, MaxLength),
+                            FirstPartEncoded = submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, ?ESM_CLASS_GSM_UDHI, DataCoding, byte_size(FirstPart), FirstPart, RegisteredDelivery, Options),
+                            EncodedPartsReversed = lists:foldl(fun(Chunk, Acc) -> [submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, ?ESM_CLASS_GSM_UDHI, DataCoding, byte_size(Chunk), Chunk, ?REGISTERED_DELIVERY_MC_NEVER, Options) | Acc] end, [FirstPartEncoded], OtherParts),
+                            {ok, TotalParts, EncodedPartsReversed}
                     end;
                 _ ->
                     {error, {encoding_failed, DataCoding, Message}}
@@ -498,9 +506,9 @@ submit_sm_options(SrcAddr, DstAddr, Message, RefNumber, Options) ->
             Error
     end.
 
-submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, EsmClass, DataCoding, MsgLength, Msg, Options) -> [
+submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, EsmClass, DataCoding, MsgLength, Msg, RegisteredDelivery, Options) -> [
     {service_type, maps:get(service_type, Options)},
-    {registered_delivery, maps:get(registered_delivery, Options)},
+    {registered_delivery, RegisteredDelivery},
     {source_addr_ton, get_ton(SrcAddr, SrcAddrType)},
     {source_addr_npi, get_npi(SrcAddr, SrcAddrType)},
     {source_addr, SrcAddr},
@@ -581,12 +589,20 @@ get_address_type([Char | Rest], _Any) ->
             alpha
     end.
 
-ref_num_increase(R) ->
+get_next_ref_num(R) ->
     case R of
         255 ->
             1;
         _ ->
             R+1
+    end.
+
+get_next_sequence_number(Nr) ->
+    case Nr of
+        ?SMPP_SEQ_NUM_MAX ->
+            1;
+        _ ->
+            Nr + 1
     end.
 
 run_callback(Method, Arity, Args, Options) ->
