@@ -26,3 +26,6 @@
 -define(EXCEPTION(Class, Reason, _), Class:Reason).
 -define(GET_STACK(_), erlang:get_stacktrace()).
 -endif.
+
+-type timestamp()  :: non_neg_integer()|null.
+-type msg_status() :: binary().

@@ -12,6 +12,8 @@
 -define(SMPP_SEQ_NUM_MAX, 16#7FFFFFFF).
 -define(IS_BIND_RESPONSE(C), C == ?COMMAND_ID_BIND_RECEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSCEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSMITTER_RESP ).
 
+-define(REPLY_MSG(CommandId, FromPid, Async, Args), {CommandId, FromPid, Async, Args}).
+
 -define(SOCKET_DEFAULT_OPTIONS, [
     {mode, binary},
     {packet, raw},
@@ -29,19 +31,25 @@
 -callback on_submit_sm_response_failed(MessageRef::any(), Error::any()) ->
     any().
 
--callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::non_neg_integer()|null, DoneDate::non_neg_integer()|null, Status::binary(), ErrorCode::non_neg_integer()) ->
+-callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::timestamp(), DoneDate::timestamp(), Status::msg_status(), ErrorCode::non_neg_integer()) ->
+    any().
+
+-callback on_query_sm_response(MessageId::binary(), Success::boolean(), Response::[{any(), any()}]|{error, any()}) ->
     any().
 
 -optional_callbacks([
     on_submit_sm_response_successful/3,
     on_submit_sm_response_failed/2,
-    on_delivery_report/7
+    on_delivery_report/7,
+    on_query_sm_response/3
 ]).
 
 -export([
     start_link/1,
     submit_sm/4,
     submit_sm_async/5,
+    query_sm/2,
+    query_sm_async/2,
 
     init/1,
     handle_call/3,
@@ -69,17 +77,20 @@
     pending_requests_timeout_timer
 }).
 
-%todo:
-% - check dlvrd and sent in dlr
-
 start_link(Options) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, Options, []).
 
 submit_sm(PidOrName, SrcAddr, DstAddr, Message) ->
-    esmpplib_utils:safe_call(PidOrName, {submit_sm, undefined, SrcAddr, DstAddr, Message, false}).
+    esmpplib_utils:safe_call(PidOrName, {submit_sm, undefined, SrcAddr, DstAddr, Message, false}, infinity).
 
 submit_sm_async(PidOrName, MessageRef, SrcAddr, DstAddr, Message) ->
     esmpplib_utils:safe_call(PidOrName, {submit_sm, MessageRef, SrcAddr, DstAddr, Message, true}).
+
+query_sm(PidOrName, MessageId) ->
+    esmpplib_utils:safe_call(PidOrName, {query_sm, MessageId, false}, infinity).
+
+query_sm_async(PidOrName, MessageId) ->
+    esmpplib_utils:safe_call(PidOrName, {query_sm, MessageId, true}).
 
 init(Options0) ->
     Options = maps:merge(default_options(), Options0),
@@ -114,7 +125,7 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
                     NewPendingReqQueue = esmpplib_pending_request_queue:push(SeqNum, RequestTimeoutMs, PendingReqQueue),
                     NewState = State#state{
                         seq_num = get_next_sequence_number(SeqNum),
-                        reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap),
+                        reply_map = maps:put(SeqNum, ?REPLY_MSG(?COMMAND_ID_SUBMIT_SM, FromPid, Async, [MessageRef, 1]), ReplyMap),
                         pending_req_queue = NewPendingReqQueue,
                         pending_requests_timeout_timer = schedule_pending_request_timeout(NewPendingReqQueue, PendingReqTimeoutTimer)
                     },
@@ -136,7 +147,7 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
                     NewState = State#state{
                         seq_num = NewSeqNum,
                         ref_num = get_next_ref_num(RefNumber),
-                        reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap),
+                        reply_map = maps:put(LastSentSeqNum, ?REPLY_MSG(?COMMAND_ID_SUBMIT_SM, FromPid, Async, [MessageRef, TotalParts]), ReplyMap),
                         pending_req_queue = NewPendingReqQueue,
                         pending_requests_timeout_timer = schedule_pending_request_timeout(NewPendingReqQueue, PendingReqTimeoutTimer)
                     },
@@ -152,7 +163,35 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
                     {reply, Error, State}
             end
     end;
-
+handle_call({query_sm, MessageId, Async}, FromPid, #state{
+    binding_mode = BindingMode,
+    transport = Transport,
+    socket= Socket,
+    seq_num = SeqNum,
+    reply_map = ReplyMap,
+    pending_req_queue = PendingReqQueue,
+    pending_requests_timeout_timer = PendingReqTimeoutTimer,
+    options = Options } = State) ->
+    case BindingMode of
+        undefined ->
+            {reply, {error, not_connected}, State};
+        _ ->
+            RequestTimeoutMs = maps:get(pending_requests_timeout, Options),
+            send_command(Transport, Socket, {?COMMAND_ID_QUERY_SM, ?ESME_ROK, SeqNum, [{message_id, MessageId}]}),
+            NewPendingReqQueue = esmpplib_pending_request_queue:push(SeqNum, RequestTimeoutMs, PendingReqQueue),
+            NewState = State#state{
+                seq_num = get_next_sequence_number(SeqNum),
+                reply_map = maps:put(SeqNum, ?REPLY_MSG(?COMMAND_ID_QUERY_SM, FromPid, Async, [MessageId]), ReplyMap),
+                pending_req_queue = NewPendingReqQueue,
+                pending_requests_timeout_timer = schedule_pending_request_timeout(NewPendingReqQueue, PendingReqTimeoutTimer)
+            },
+            case Async of
+                true ->
+                    {reply, ok, NewState};
+                _ ->
+                    {noreply, NewState}
+            end
+    end;
 handle_call(Request, _From, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown call request: ~p", [Id, Request]),
     {reply, ok, State}.
@@ -224,7 +263,7 @@ handle_info(Info, #state{id = Id} = State) ->
 terminate(Reason, #state{id = Id, transport = Transport, socket = Socket, reply_map = ReplyMap, options = Options}) ->
     ?INFO_MSG("connection_id: ~p terminate with reason: ~p", [Id, Reason]),
     close_socket(Transport, Socket),
-    cleanup_reply_map(ReplyMap, shutdown_connection, Options),
+    cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options),
     ok.
 
 code_change(_OldVsn, State = #state{}, _Extra) ->
@@ -240,6 +279,8 @@ process_incoming_data(#state{id = Id, parser = Parser} = State, Data) ->
                     handle_submit_sm_response(Pdu, State);
                 ?COMMAND_ID_DELIVER_SM ->
                     handle_deliver_sm_request(Pdu, State);
+                ?COMMAND_ID_QUERY_SM_RESP ->
+                    handle_query_sm_response(Pdu, State);
                 ?COMMAND_ID_ENQUIRE_LINK ->
                     handle_enquire_link_request(Pdu, State);
                 ?COMMAND_ID_ENQUIRE_LINK_RESP ->
@@ -318,7 +359,7 @@ handle_enquire_link_request({CmdId, Status, SeqNum, _Body}, #state{id = Id, tran
 
 handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, pending_req_queue = PendingReqQueue, options = Options} = State) ->
     case maps:take(SeqNum, ReplyMap) of
-        {{FromPid, Async, MessageRef, TotalParts}, NewReplyMap} ->
+        {{?COMMAND_ID_SUBMIT_SM, FromPid, Async, [MessageRef, TotalParts]}, NewReplyMap} ->
             case Status of
                 ?ESME_ROK ->
                     MessageId = esmpplib_utils:lookup(message_id, Body),
@@ -358,14 +399,14 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
                 {match, [MessageId, _Submitted0, _Delivered0, _, SubmitDate0, _, DlrDate0, DlrStatus, ErrorCode0, _Text]} ->
                     SubmitDate = dlr_datetime2ts(SubmitDate0),
                     DoneDate = dlr_datetime2ts(DlrDate0),
-                    ErrorCode = esmpplib_utils:safe_bin2int({Id, <<"err">>}, ErrorCode0, null),
+                    ErrorCode = esmpplib_utils:safe_bin2int({Id, <<"err">>}, ErrorCode0, 0),
                     run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, SubmitDate, DoneDate, DlrStatus, ErrorCode], Options);
                 _ ->
                     case esmpplib_utils:lookup(receipted_message_id, Body) of
                         undefined ->
                             ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed to parse: ~p and receipted_message_id is missing.", [Id, Message]);
                         MessageId ->
-                            DlrStatus = esmpplib_utils:lookup(message_state, Body, <<"UNKNOWN">>),
+                            DlrStatus = esmpplib_msg_status:to_string(esmpplib_utils:lookup(message_state, Body, ?MESSAGE_STATE_UNKNOWN)),
                             ErrorCode = case esmpplib_utils:lookup(network_error_code, Body) of
                                 #network_error_code{error = Code} ->
                                     Code;
@@ -379,6 +420,38 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
         _ ->
             ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed status: ~p", [Id, {Status, smpp_status2bin(Status), SeqNum, Body}]),
             {ok, State}
+    end.
+
+handle_query_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, options = Options, pending_req_queue = PendingRqQueue} = State) ->
+    case maps:take(SeqNum, ReplyMap) of
+        {{?COMMAND_ID_QUERY_SM, FromPid, Async, [MessageId]}, NewReplyMap} ->
+            case Status of
+                ?ESME_ROK ->
+                    Response = [
+                        {message_id, esmpplib_utils:lookup(message_id, Body)},
+                        {message_state, esmpplib_msg_status:to_string(esmpplib_utils:lookup(message_state, Body))},
+                        {final_date, dlr_datetime2ts(esmpplib_utils:lookup(final_date, Body))},
+                        {error_code, esmpplib_utils:lookup(error_code, Body)}
+                    ],
+
+                    case Async of
+                        false ->
+                            gen_server:reply(FromPid, {ok, Response});
+                        _ ->
+                            run_callback(on_query_sm_response, 3, [MessageId, true, Response], Options)
+                    end;
+                _ ->
+                    ErrorMsg = {error, {query_failed, Status, smpp_status2bin(Status)}},
+                    case Async of
+                        false ->
+                            gen_server:reply(FromPid, ErrorMsg);
+                        _ ->
+                            run_callback(on_query_sm_response, 2, [MessageId, false, ErrorMsg], Options)
+                    end
+            end,
+            {ok, State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)}};
+        _ ->
+            {ok, State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)}}
     end.
 
 connect_and_bind(Id, Transport, SeqNum, Options) ->
@@ -433,7 +506,7 @@ reconnect(#state{
     close_socket(Transport, Socket),
     cancel_timer(EqLinkTimer),
     cancel_timer(PendingReqTimeoutRef),
-    cleanup_reply_map(ReplyMap, connection_lost, Options),
+    cleanup_reply_map(ReplyMap, {error, connection_lost}, Options),
 
     schedule_reconnect(Attempts, Options),
     NewState = cleanup_state(State),
@@ -443,15 +516,7 @@ cleanup_state(#state{id = Id, transport = Transport, options = Options, reconnec
     #state{id = Id, transport = Transport, options = Options, reconnect_attempts = Rc}.
 
 cleanup_reply_map(ReplyMap, Reason, Options) ->
-    ReplyList = maps:to_list(ReplyMap),
-    lists:foreach(fun({_, {FromPid, Async, MessageRef, _TotalParts}}) ->
-        case Async of
-            false ->
-                gen_server:reply(FromPid, {error, Reason});
-            _ ->
-                run_callback(on_submit_sm_response_failed, 2, [MessageRef, {error, Reason}], Options)
-        end
-    end, ReplyList).
+    lists:foreach(fun({_, Msg}) -> failure_reply_to_message(Msg, Reason, Options) end, maps:to_list(ReplyMap)).
 
 cancel_timer(undefined) ->
     ok;
@@ -504,13 +569,8 @@ check_requests_timeout(Now, #state{options = Options, pending_req_queue = Pendin
                 true ->
                     ?INFO_MSG("found expired request -> seq_num: ~p", [SeqNum]),
                     NewReplyMap = case maps:take(SeqNum, ReplyMap) of
-                        {{FromPid, Async, MessageRef, _TotalParts}, NewReplyMap0} ->
-                            case Async of
-                                false ->
-                                    gen_server:reply(FromPid, {error, expired});
-                                _ ->
-                                    run_callback(on_submit_sm_response_failed, 2, [MessageRef, {error, expired}], Options)
-                            end,
+                        {Msg, NewReplyMap0} ->
+                            failure_reply_to_message(Msg, {error, expired}, Options),
                             NewReplyMap0;
                         _ ->
                             ReplyMap
@@ -523,13 +583,30 @@ check_requests_timeout(Now, #state{options = Options, pending_req_queue = Pendin
                     State#state{pending_requests_timeout_timer = TimerRef}
             end;
         _ ->
-            ?INFO_MSG("no timeout requests to check ...", []),
+            %?INFO_MSG("no timeout requests to check ...", []),
             State#state{pending_requests_timeout_timer = undefined}
     end.
 
 send_command(Transport, Socket, Cmd) ->
     {ok, RespBin} = smpp_operation:pack(Cmd),
     Transport:send(Socket, RespBin).
+
+failure_reply_to_message({CommandId, FromPid, Async, Args}, Reason, Options) ->
+    case Async of
+        false ->
+            gen_server:reply(FromPid, Reason);
+        _ ->
+            case CommandId of
+                ?COMMAND_ID_SUBMIT_SM ->
+                    [MessageRef, _TotalParts] = Args,
+                    run_callback(on_submit_sm_response_failed, 2, [MessageRef, Reason], Options);
+                ?COMMAND_ID_QUERY_SM ->
+                    [MessageId] = Args,
+                    run_callback(on_query_sm_response, 3, [MessageId, false, Reason], Options);
+                _ ->
+                    ok
+            end
+    end.
 
 default_options() -> #{
     transport => tcp,
@@ -612,6 +689,24 @@ dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/
     Mm = binary_to_integer(Mm0),
     Ss = binary_to_integer(Ss0),
     esmpplib_time:datetime2ts({{YY, MM, DD}, {Hh, Mm, Ss}});
+dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/binary, Ss0:2/binary, _:1/binary, Nn:2/binary, P:1/binary>>) ->
+    % 4.7.23.4 Absolute Time Format
+    % YYMMDDhhmmsstnnp
+    YY = 2000 + binary_to_integer(YY0),
+    MM = binary_to_integer(MM0),
+    DD = binary_to_integer(DD0),
+    Hh = binary_to_integer(Hh0),
+    Mm = binary_to_integer(Mm0),
+    Ss = binary_to_integer(Ss0),
+    Diff = binary_to_integer(Nn)*15*60,
+    Ts = esmpplib_time:datetime2ts({{YY, MM, DD}, {Hh, Mm, Ss}}),
+    
+    case P of
+        <<"+">> ->
+            Ts - Diff;
+        <<"-">> ->
+            Ts + Diff
+    end;
 dlr_datetime2ts(_) ->
     null.
 
