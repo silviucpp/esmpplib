@@ -700,7 +700,7 @@ dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/
     Ss = binary_to_integer(Ss0),
     Diff = binary_to_integer(Nn)*15*60,
     Ts = esmpplib_time:datetime2ts({{YY, MM, DD}, {Hh, Mm, Ss}}),
-    
+
     case P of
         <<"+">> ->
             Ts - Diff;
