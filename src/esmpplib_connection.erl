@@ -29,13 +29,13 @@
 -callback on_submit_sm_response_failed(MessageRef::any(), Error::any()) ->
     any().
 
--callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SentParts::non_neg_integer(), DeliveredParts::non_neg_integer(), SubmitDate::non_neg_integer(), DlrDate::non_neg_integer(), Status::binary(), ErrorCode::non_neg_integer()) ->
+-callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::non_neg_integer()|null, DoneDate::non_neg_integer()|null, Status::binary(), ErrorCode::non_neg_integer()) ->
     any().
 
 -optional_callbacks([
     on_submit_sm_response_successful/3,
     on_submit_sm_response_failed/2,
-    on_delivery_report/9
+    on_delivery_report/7
 ]).
 
 -export([
@@ -349,22 +349,31 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
 
     case Status of
         ?ESME_ROK ->
-            MessageId = esmpplib_utils:lookup(receipted_message_id, Body),
             Message = esmpplib_utils:lookup(short_message, Body),
             DataCoding = esmpplib_utils:lookup(data_coding, Body),
+            SourceAddress = esmpplib_utils:lookup(destination_addr, Body),
+            DestinationAddress = esmpplib_utils:lookup(source_addr, Body),
 
-            case re:run(esmpplib_encoding:decode(DataCoding, Message), <<"id:(.*?) sub:(.*?) dlvrd:(.*?) submit date:(.*?) done date:(.*?) stat:(.*?) err:(.*?) text:(.*)">>, [{capture, all_but_first, binary}]) of
-                {match, [MessageId, Submitted0, Delivered0, SubmitDate0, DlrDate0, DlrStatus, ErrorCode0, _Text]} ->
-                    Submitted = esmpplib_utils:safe_bin2int({Id, <<"sub">>}, Submitted0, null),
-                    Delivered = esmpplib_utils:safe_bin2int({Id, <<"dlvrd">>}, Delivered0, null),
+            case re:run(esmpplib_encoding:decode(DataCoding, Message), <<"id:(.*?) sub:(.*?) dlvrd:(.*?) (submit date:|submitdate:)(.*?) (done date:|donedate:)(.*?) stat:(.*?) err:(.*?) text:(.*?)">>, [{capture, all_but_first, binary}]) of
+                {match, [MessageId, _Submitted0, _Delivered0, _, SubmitDate0, _, DlrDate0, DlrStatus, ErrorCode0, _Text]} ->
                     SubmitDate = dlr_datetime2ts(SubmitDate0),
-                    DlrDate = dlr_datetime2ts(DlrDate0),
+                    DoneDate = dlr_datetime2ts(DlrDate0),
                     ErrorCode = esmpplib_utils:safe_bin2int({Id, <<"err">>}, ErrorCode0, null),
-                    SourceAddress = esmpplib_utils:lookup(destination_addr, Body),
-                    DestinationAddress = esmpplib_utils:lookup(source_addr, Body),
-                    run_callback(on_delivery_report, 9, [MessageId, SourceAddress, DestinationAddress, Submitted, Delivered, SubmitDate, DlrDate, DlrStatus, ErrorCode], Options);
+                    run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, SubmitDate, DoneDate, DlrStatus, ErrorCode], Options);
                 _ ->
-                    ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed to parse: ~p", [Id, Message])
+                    case esmpplib_utils:lookup(receipted_message_id, Body) of
+                        undefined ->
+                            ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed to parse: ~p and receipted_message_id is missing.", [Id, Message]);
+                        MessageId ->
+                            DlrStatus = esmpplib_utils:lookup(message_state, Body, <<"UNKNOWN">>),
+                            ErrorCode = case esmpplib_utils:lookup(network_error_code, Body) of
+                                #network_error_code{error = Code} ->
+                                    Code;
+                                _ ->
+                                    0
+                            end,
+                            run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, null, null, DlrStatus, ErrorCode], Options)
+                    end
             end,
             {ok, State};
         _ ->
@@ -586,6 +595,8 @@ submit_sm_options(SrcAddr, SrcAddrType, DstAddr, DstAddrType, EsmClass, DataCodi
     {short_message, Msg}
 ].
 
+dlr_datetime2ts(<<"00", _/binary>>) ->
+    null;
 dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/binary>>) ->
     YY = 2000 + binary_to_integer(YY0),
     MM = binary_to_integer(MM0),
@@ -593,6 +604,14 @@ dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/
     Hh = binary_to_integer(Hh0),
     Mm = binary_to_integer(Mm0),
     esmpplib_time:datetime2ts({{YY, MM, DD}, {Hh, Mm, 0}});
+dlr_datetime2ts(<<YY0:2/binary, MM0:2/binary, DD0:2/binary, Hh0:2/binary, Mm0:2/binary, Ss0:2/binary>>) ->
+    YY = 2000 + binary_to_integer(YY0),
+    MM = binary_to_integer(MM0),
+    DD = binary_to_integer(DD0),
+    Hh = binary_to_integer(Hh0),
+    Mm = binary_to_integer(Mm0),
+    Ss = binary_to_integer(Ss0),
+    esmpplib_time:datetime2ts({{YY, MM, DD}, {Hh, Mm, Ss}});
 dlr_datetime2ts(_) ->
     null.
 
