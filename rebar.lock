@@ -5,7 +5,7 @@
   1},
  {<<"epqueue">>,
   {git,"https://github.com/silviucpp/epqueue.git",
-       {ref,"850ddf431ee11a2629c1af833053b4c89ba17f59"}},
+       {ref,"1f2ccee5347bb1559eee4b5f350b72875f4d5c03"}},
   0},
  {<<"erlpool">>,{pkg,<<"erlpool">>,<<"1.4.2">>},0},
  {<<"gsm0338">>,
