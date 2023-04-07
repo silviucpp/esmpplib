@@ -8,6 +8,7 @@
         stdlib,
         ranch,
         tic,
+        epqueue,
         smpp_parser,
         gsm0338,
         erlpool

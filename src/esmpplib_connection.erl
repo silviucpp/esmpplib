@@ -56,21 +56,20 @@
     transport,
     options,
     reconnect_attempts = 0,
-    reply_map = #{},
 
+    reply_map = #{},
+    pending_req_queue = esmpplib_pending_request_queue:new(),
     socket,
     parser,
     seq_num = 1,
     ref_num = 1,
     binding_mode,
-
     enquire_link_timer,
-    binding_timer
+    binding_timer,
+    pending_requests_timeout_timer
 }).
 
 %todo:
-% - timeout on submit_sm
-% - cache data instead using options lookup
 % - check dlvrd and sent in dlr
 
 start_link(Options) ->
@@ -97,6 +96,8 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
     seq_num = SeqNum,
     ref_num = RefNumber,
     reply_map = ReplyMap,
+    pending_req_queue = PendingReqQueue,
+    pending_requests_timeout_timer = PendingReqTimeoutTimer,
     options = Options } = State) ->
 
     case BindingMode of
@@ -105,10 +106,18 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
         receiver ->
             {reply, {error, <<"receiver only binding mode.">>}, State};
         _ ->
+            RequestTimeoutMs = maps:get(pending_requests_timeout, Options),
+
             case submit_sm_options(SrcAddr, DstAddr, Message, RefNumber, Options) of
                 {ok, SubmitSmOption} ->
                     send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, SeqNum, SubmitSmOption}),
-                    NewState = State#state{seq_num = get_next_sequence_number(SeqNum), reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap)},
+                    NewPendingReqQueue = esmpplib_pending_request_queue:push(SeqNum, RequestTimeoutMs, PendingReqQueue),
+                    NewState = State#state{
+                        seq_num = get_next_sequence_number(SeqNum),
+                        reply_map = maps:put(SeqNum, {FromPid, Async, MessageRef, 1}, ReplyMap),
+                        pending_req_queue = NewPendingReqQueue,
+                        pending_requests_timeout_timer = schedule_pending_request_timeout(NewPendingReqQueue, PendingReqTimeoutTimer)
+                    },
                     case Async of
                         true ->
                             {reply, ok, NewState};
@@ -119,12 +128,18 @@ handle_call({submit_sm, MessageRef, SrcAddr, DstAddr, Message, Async}, FromPid, 
                     % please not the parts here are in reverse order (this is by design)
                     % we store the last sequence_number which is associated with the first part.
 
-                    {NewSeqNum, LastSentSeqNum} = lists:foldl(fun(SubmitSmOption, {NewSq, _} ) ->
+                    {NewSeqNum, LastSentSeqNum, NewPendingReqQueue} = lists:foldl(fun(SubmitSmOption, {NewSq, _, PrQ} ) ->
                         send_command(Transport, Socket, {?COMMAND_ID_SUBMIT_SM, ?ESME_ROK, NewSq, SubmitSmOption}),
-                        {get_next_sequence_number(NewSq), NewSq}
-                    end, {SeqNum, SeqNum}, SubmitSmListReversed),
+                        {get_next_sequence_number(NewSq), NewSq, esmpplib_pending_request_queue:push(NewSq, RequestTimeoutMs, PrQ)}
+                    end, {SeqNum, SeqNum, PendingReqQueue}, SubmitSmListReversed),
 
-                    NewState = State#state{seq_num = NewSeqNum, ref_num = get_next_ref_num(RefNumber), reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap)},
+                    NewState = State#state{
+                        seq_num = NewSeqNum,
+                        ref_num = get_next_ref_num(RefNumber),
+                        reply_map = maps:put(LastSentSeqNum, {FromPid, Async, MessageRef, TotalParts}, ReplyMap),
+                        pending_req_queue = NewPendingReqQueue,
+                        pending_requests_timeout_timer = schedule_pending_request_timeout(NewPendingReqQueue, PendingReqTimeoutTimer)
+                    },
 
                     case Async of
                         true ->
@@ -171,6 +186,8 @@ handle_info({SocketErrorTag, _, Reason}, #state{id = Id} = State) when ?IS_SOCKE
         Error ->
             {stop, Error, State}
     end;
+handle_info(pending_request_timeout_check, State) ->
+    {noreply, check_requests_timeout(esmpplib_time:now_msec(), State)};
 handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_num = SeqNum, options = Options} = State) ->
     send_command(Transport, Socket, {?COMMAND_ID_ENQUIRE_LINK, ?ESME_ROK, SeqNum, []}),
     {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_num = get_next_sequence_number(SeqNum)}};
@@ -206,12 +223,7 @@ handle_info(Info, #state{id = Id} = State) ->
 
 terminate(Reason, #state{id = Id, transport = Transport, socket = Socket, reply_map = ReplyMap, options = Options}) ->
     ?INFO_MSG("connection_id: ~p terminate with reason: ~p", [Id, Reason]),
-    case Socket of
-        undefined ->
-            ok;
-        _ ->
-            Transport:close(Socket)
-    end,
+    close_socket(Transport, Socket),
     cleanup_reply_map(ReplyMap, shutdown_connection, Options),
     ok.
 
@@ -304,7 +316,7 @@ handle_enquire_link_request({CmdId, Status, SeqNum, _Body}, #state{id = Id, tran
             {ok, State}
     end.
 
-handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, options = Options} = State) ->
+handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, pending_req_queue = PendingReqQueue, options = Options} = State) ->
     case maps:take(SeqNum, ReplyMap) of
         {{FromPid, Async, MessageRef, TotalParts}, NewReplyMap} ->
             case Status of
@@ -325,9 +337,9 @@ handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = Rep
                             run_callback(on_submit_sm_response_failed, 2, [MessageRef, ErrorMsg], Options)
                     end
             end,
-            {ok, State#state{reply_map = NewReplyMap}};
+            {ok, State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)}};
         _ ->
-            {ok, State}
+            {ok, State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)}}
     end.
 
 handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options = Options, transport = Transport, socket = Socket} = State) ->
@@ -400,21 +412,18 @@ bind(Transport, Socket, SeqNum, Options) ->
 
     send_command(Transport, Socket, {CmdId, ?ESME_ROK, SeqNum, CmdOptions}).
 
-reconnect(#state{transport = Transport, socket = Socket, reply_map = ReplyMap, options = Options, reconnect_attempts = Attempts, enquire_link_timer = EqLinkTimer} = State) ->
-    case Socket of
-        undefined ->
-            ok;
-        _ ->
-            Transport:close(Socket)
-    end,
+reconnect(#state{
+    transport = Transport,
+    socket = Socket,
+    reply_map = ReplyMap,
+    options = Options,
+    reconnect_attempts = Attempts,
+    enquire_link_timer = EqLinkTimer,
+    pending_requests_timeout_timer = PendingReqTimeoutRef } = State) ->
 
-    case EqLinkTimer of
-        undefined ->
-            ok;
-        _ ->
-            erlang:cancel_timer(EqLinkTimer)
-    end,
-
+    close_socket(Transport, Socket),
+    cancel_timer(EqLinkTimer),
+    cancel_timer(PendingReqTimeoutRef),
     cleanup_reply_map(ReplyMap, connection_lost, Options),
 
     schedule_reconnect(Attempts, Options),
@@ -434,6 +443,16 @@ cleanup_reply_map(ReplyMap, Reason, Options) ->
                 run_callback(on_submit_sm_response_failed, 2, [MessageRef, {error, Reason}], Options)
         end
     end, ReplyList).
+
+cancel_timer(undefined) ->
+    ok;
+cancel_timer(Ref) ->
+    erlang:cancel_timer(Ref).
+
+close_socket(_Transport, undefined) ->
+    ok;
+close_socket(Transport, Socket) ->
+    Transport:close(Socket).
 
 schedule_reconnect(Attempts, Options) ->
     SendAfter = erlang:min(Attempts*200, maps:get(max_reconnection_time, Options)),
@@ -455,6 +474,50 @@ schedule_binding_timeout_check(Options) ->
             erlang:send_after(TimeMs, self(), binding_timeout)
     end.
 
+schedule_pending_request_timeout(PendingRqQueue, PendingTimerRef) ->
+    case PendingTimerRef of
+        undefined ->
+            case esmpplib_pending_request_queue:peek_next_expired_ack(PendingRqQueue) of
+                {ok, _, ExpireTimeMs} ->
+                    erlang:send_after(erlang:max(0, ExpireTimeMs - esmpplib_time:now_msec()), self(), pending_request_timeout_check);
+                _ ->
+                    undefined
+            end;
+        _ ->
+            PendingTimerRef
+    end.
+
+check_requests_timeout(Now, #state{options = Options, pending_req_queue = PendingRqQueue, reply_map = ReplyMap} = State) ->
+    case esmpplib_pending_request_queue:peek_next_expired_ack(PendingRqQueue) of
+        {ok, SeqNum, ExpireTimeMs} ->
+            Elapsed = ExpireTimeMs - Now,
+            case Elapsed =< 0 of
+                true ->
+                    ?INFO_MSG("found expired request -> seq_num: ~p", [SeqNum]),
+                    NewReplyMap = case maps:take(SeqNum, ReplyMap) of
+                        {{FromPid, Async, MessageRef, _TotalParts}, NewReplyMap0} ->
+                            case Async of
+                                false ->
+                                    gen_server:reply(FromPid, {error, expired});
+                                _ ->
+                                    run_callback(on_submit_sm_response_failed, 2, [MessageRef, {error, expired}], Options)
+                            end,
+                            NewReplyMap0;
+                        _ ->
+                            ReplyMap
+                    end,
+                    {ok, _, NewPendingRqQueue} = esmpplib_pending_request_queue:pop_next_expired_ack(PendingRqQueue),
+                    check_requests_timeout(Now, State#state{pending_req_queue = NewPendingRqQueue, reply_map = NewReplyMap});
+                _ ->
+                    ?INFO_MSG("schedule next timeout requests check after: ~p ms", [Elapsed]),
+                    TimerRef = erlang:send_after(erlang:max(0, Elapsed), self(), pending_request_timeout_check),
+                    State#state{pending_requests_timeout_timer = TimerRef}
+            end;
+        _ ->
+            ?INFO_MSG("no timeout requests to check ...", []),
+            State#state{pending_requests_timeout_timer = undefined}
+    end.
+
 send_command(Transport, Socket, Cmd) ->
     {ok, RespBin} = smpp_operation:pack(Cmd),
     Transport:send(Socket, RespBin).
@@ -464,6 +527,7 @@ default_options() -> #{
     max_smpp_packet_size => 200000, % 200KB,
     connection_timeout => 5000,
     binding_response_timeout => 5000,
+    pending_requests_timeout => 10000,
     max_reconnection_time => 5000,
     bind_mode => transceiver,
     system_type => <<"">>,
