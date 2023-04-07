@@ -6,8 +6,7 @@ esmpplib
 
 esmpplib is an SMPP client library for erlang.  
 
-Motivation
-------
+# Motivation
 
 There are many erlang SMPP clients around, but after I analyzed some of those I found the following issues:
 
@@ -17,8 +16,7 @@ There are many erlang SMPP clients around, but after I analyzed some of those I 
 - Are not providing an easy-to-use API without exposing the entire SMPP complexity.
 - They don't provide support for secure connections (SSL).
 
-Features
----------
+# Features
 
 - Connection pool.
 - Support both TCP and SSL connections.
@@ -29,8 +27,7 @@ Features
 - Long messages are automatically split into multiple parts when they exceed the `data_coding` charset maximum chars limit.
 - The charset (`GSM 03.38` or `UCS2`) is automatically detected if not forced in config.
 
-Implemented SMPP commands
----------------------------
+# Implemented SMPP commands
 
 The following SMPP commands are implemented currently:
 
@@ -44,10 +41,9 @@ The following SMPP commands are implemented currently:
 - deliver_sm
 - query_sm
 
-Quick start
-------------
+# Quick start
 
-Compile:
+### Compile
 
 ```
 rebar3 compile
@@ -74,6 +70,16 @@ You can use the `esmpplib_connection` in case you don't want to  use the connect
 ]}
 ```
 
+### Example
+
+You can send message using the following code:
+
+```erl
+esmpplib:submit_sm(my_pool, <<"SENDER_ID">>, <<"40743XXXXX">>, <<"Hello World!">>).
+```
+
+### Config
+
 The supported `connection_options` configs are:
 
 - `host` - (mandatory). The SMSCs host where the client should connect. Can be an IP (`{X,X,X,X}` or a string representing the domain).
@@ -95,13 +101,12 @@ The supported `connection_options` configs are:
 - `callback_module` - (`undefined`). The application module that implements the `esmpplib_connection` behaviour, where to receive callbacks for certain events (delivery receipts or responses for async requests).
 - `registered_delivery` - Allows you to specify what delivery receipts should be sent. Default to `2#00000001` (all receipts). See `Delivery Receipts` section below. 
 
-**Notes:**
+##### Notes
 
 - In case you are using the `esmpplib_connection` directly please note that the above settings should be sent as an erlang map not as a proplist.
 - There is another `id` parameter that allows you to set a tag that's displayed in the library logs events. In case of a connection pool the pool name is set as `id`.
 
-Available Encoding scheme
------------------
+### Available Encoding scheme
 
 The following encoding scheme are supported:
 
@@ -110,8 +115,7 @@ The following encoding scheme are supported:
 - `2#00000011`: Latin 1 (ISO-8859-1).
 - `2#00001000`: ISO/IEC-10646 (UCS2/UTF16-BE)
 
-Delivery Receipts
-----------------
+### Delivery Receipts
 
 Using the `registered_delivery` parameter you can configure which delivery receipts to receive. The following values are supported:
 
