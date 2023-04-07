@@ -78,6 +78,26 @@ You can send message using the following code:
 esmpplib:submit_sm(my_pool, <<"SENDER_ID">>, <<"40743XXXXX">>, <<"Hello World!">>).
 ```
 
+In case you want to use the async API or to receive dlr you have to implement the `esmpplib_connection` behaviour:
+
+```erl
+
+-module(my_callback_handler).
+
+-include_lib("esmpplib/include/esmpplib.hrl").
+
+-behavior(esmpplib_connection).
+
+on_submit_sm_response_successful(MessageRef, MessageId, NrParts) ->
+    ?INFO_MSG("### on_submit_sm_response_successful -> ~p", [[MessageRef, MessageId, NrParts]]).
+
+on_submit_sm_response_failed(MessageRef, Error) ->
+    ?INFO_MSG("### on_submit_sm_response_failed -> ~p", [[MessageRef, Error]]).
+
+on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) ->
+    ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode]]).
+```
+
 ### Config
 
 The supported `connection_options` configs are:
