@@ -3,12 +3,25 @@
 -include_lib("esmpplib.hrl").
 
 -export([
+    get_env/1,
+    get_env/2,
     lookup/2,
     lookup/3,
     safe_call/2,
     safe_call/3,
     safe_bin2int/3
 ]).
+
+get_env(Key) ->
+    get_env(Key, null).
+
+get_env(Key, Default) ->
+    case application:get_env(esmpplib, Key) of
+        {ok, Value} ->
+            Value;
+        _ ->
+            Default
+    end.
 
 lookup(Key, List) ->
     lookup(Key, List, null).

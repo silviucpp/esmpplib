@@ -4,14 +4,11 @@
 -include_lib("smpp_parser/src/smpp_globals.hrl").
 -include_lib("smpp_parser/src/smpp_base.hrl").
 
--behaviour(gen_server).
-
 -define(IS_SOCKET_CLOSED_TAG(T), T == tcp_closed orelse T == ssl_closed).
 -define(IS_SOCKET_ERROR_TAG(T), T == tcp_error orelse T == ssl_error).
 -define(MAKE_RESPONSE(CmdId), CmdId bor 16#80000000).
 -define(SMPP_SEQ_NUM_MAX, 16#7FFFFFFF).
 -define(IS_BIND_RESPONSE(C), C == ?COMMAND_ID_BIND_RECEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSCEIVER_RESP orelse C == ?COMMAND_ID_BIND_TRANSMITTER_RESP ).
-
 -define(REPLY_MSG(CommandId, FromPid, Async, Args), {CommandId, FromPid, Async, Args}).
 
 -define(SOCKET_DEFAULT_OPTIONS, [
@@ -25,6 +22,8 @@
     {send_timeout_close, true}
 ]).
 
+-behaviour(gen_server).
+
 -callback on_submit_sm_response_successful(MessageRef::any(), MessageId::binary(), NrParts::non_neg_integer()) ->
     any().
 
@@ -34,7 +33,7 @@
 -callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::timestamp(), DoneDate::timestamp(), Status::msg_status(), ErrorCode::non_neg_integer()) ->
     any().
 
--callback on_query_sm_response(MessageId::binary(), Success::boolean(), Response::[{any(), any()}]|{error, any()}) ->
+-callback on_query_sm_response(MessageId::binary(), Success::boolean(), Response::[{any(), any()}]|{error, reason()}) ->
     any().
 
 -optional_callbacks([
@@ -78,19 +77,21 @@
 }).
 
 start_link(Options) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Options, []).
+    gen_server:start_link(?MODULE, Options, []).
 
-submit_sm(PidOrName, SrcAddr, DstAddr, Message) ->
-    esmpplib_utils:safe_call(PidOrName, {submit_sm, undefined, SrcAddr, DstAddr, Message, false}, infinity).
+submit_sm(Pid, SrcAddr, DstAddr, Message) ->
+    esmpplib_utils:safe_call(Pid, {submit_sm, undefined, SrcAddr, DstAddr, Message, false}, infinity).
 
-submit_sm_async(PidOrName, MessageRef, SrcAddr, DstAddr, Message) ->
-    esmpplib_utils:safe_call(PidOrName, {submit_sm, MessageRef, SrcAddr, DstAddr, Message, true}).
+submit_sm_async(Pid, MessageRef, SrcAddr, DstAddr, Message) ->
+    esmpplib_utils:safe_call(Pid, {submit_sm, MessageRef, SrcAddr, DstAddr, Message, true}).
 
-query_sm(PidOrName, MessageId) ->
-    esmpplib_utils:safe_call(PidOrName, {query_sm, MessageId, false}, infinity).
+query_sm(Pid, MessageId) ->
+    esmpplib_utils:safe_call(Pid, {query_sm, MessageId, false}, infinity).
 
-query_sm_async(PidOrName, MessageId) ->
-    esmpplib_utils:safe_call(PidOrName, {query_sm, MessageId, true}).
+query_sm_async(Pid, MessageId) ->
+    esmpplib_utils:safe_call(Pid, {query_sm, MessageId, true}).
+
+% gen_server callbacks
 
 init(Options0) ->
     Options = maps:merge(default_options(), Options0),

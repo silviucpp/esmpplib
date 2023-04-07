@@ -29,3 +29,4 @@
 
 -type timestamp()  :: non_neg_integer()|null.
 -type msg_status() :: binary().
+-type reason() :: any().
