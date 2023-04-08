@@ -53,6 +53,7 @@
     submit_sm_async/5,
     query_sm/2,
     query_sm_async/2,
+    is_connected/1,
 
     init/1,
     handle_call/3,
@@ -95,10 +96,21 @@ query_sm(Pid, MessageId) ->
 query_sm_async(Pid, MessageId) ->
     esmpplib_utils:safe_call(Pid, {query_sm, MessageId, true}).
 
+is_connected(Pid) ->
+    esmpplib_utils:safe_call(Pid, is_connected).
+
 % gen_server callbacks
 
 init(Options0) ->
     Options = maps:merge(default_options(), Options0),
+
+    case maps:get(callback_module, Options) of
+        undefined ->
+            null;
+        Module ->
+            esmpplib_utils:ensure_module_loaded(Module)
+    end,
+
     Transport = get_transport(maps:get(transport, Options)),
     Id = maps:get(id, Options, maps:get(host, Options)),
     schedule_reconnect(0, Options),
@@ -197,6 +209,8 @@ handle_call({query_sm, MessageId, Async}, FromPid, #state{
                     {noreply, NewState}
             end
     end;
+handle_call(is_connected, _From, #state{binding_mode = BindingMode} = State) ->
+    {reply, {ok, BindingMode =/= undefined}, State};
 handle_call(Request, _From, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown call request: ~p", [Id, Request]),
     {reply, ok, State}.

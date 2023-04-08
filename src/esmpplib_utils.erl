@@ -9,7 +9,8 @@
     lookup/3,
     safe_call/2,
     safe_call/3,
-    safe_bin2int/3
+    safe_bin2int/3,
+    ensure_module_loaded/1
 ]).
 
 get_env(Key) ->
@@ -54,4 +55,12 @@ safe_bin2int(Tag, Bin, Default) ->
         _ ->
             ?ERROR_MSG("safe_bin2int failed for -> tag: ~p bin: ~p", [Tag, Bin]),
             Default
+    end.
+
+ensure_module_loaded(M) ->
+    case erlang:module_loaded(M) of
+        false ->
+            code:ensure_loaded(M);
+        true ->
+            ok
     end.
