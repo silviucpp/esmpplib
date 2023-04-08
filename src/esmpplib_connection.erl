@@ -36,11 +36,15 @@
 -callback on_query_sm_response(MessageId::binary(), Success::boolean(), Response::[{any(), any()}]|{error, reason()}) ->
     any().
 
+-callback on_connection_change_notification(Id::any(), Pid::pid(), IsConnected::boolean()) ->
+    any().
+
 -optional_callbacks([
     on_submit_sm_response_successful/3,
     on_submit_sm_response_failed/2,
     on_delivery_report/7,
-    on_query_sm_response/3
+    on_query_sm_response/3,
+    on_connection_change_notification/3
 ]).
 
 -export([
@@ -212,51 +216,36 @@ handle_info({SocketType, Socket, Data}, #state{id = Id, transport = Transport} =
     end;
 handle_info({SocketClosedTag, Sock}, #state{id = Id, socket = Sock} = State) when ?IS_SOCKET_CLOSED_TAG(SocketClosedTag) ->
     ?WARNING_MSG("connection_id: ~p socket closed. reconnect ...", [Id]),
-    case reconnect(State) of
-        {ok, NewState} ->
-            {noreply, NewState};
-        Error ->
-            {stop, Error, State}
-    end;
+    {ok, NewState} = reconnect(State),
+    {noreply, NewState};
 handle_info({SocketErrorTag, _, Reason}, #state{id = Id} = State) when ?IS_SOCKET_ERROR_TAG(SocketErrorTag) ->
     ?WARNING_MSG("connection_id: ~p socket error: ~p. reconnect ...", [Id, Reason]),
-    case reconnect(State) of
-        {ok, NewState} ->
-            {noreply, NewState};
-        Error ->
-            {stop, Error, State}
-    end;
+    {ok, NewState} = reconnect(State),
+    {noreply, NewState};
 handle_info(pending_request_timeout_check, State) ->
     {noreply, check_requests_timeout(esmpplib_time:now_msec(), State)};
 handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_num = SeqNum, options = Options} = State) ->
     send_command(Transport, Socket, {?COMMAND_ID_ENQUIRE_LINK, ?ESME_ROK, SeqNum, []}),
     {noreply, State#state{enquire_link_timer = schedule_enquire_link(Options), seq_num = get_next_sequence_number(SeqNum)}};
 handle_info(start_connection, #state{id = Id, transport = Transport, seq_num = SeqNr, options = Options} = State) ->
-    case connect_and_bind(Id, Transport, SeqNr, Options) of
+    NewState = case connect_and_bind(Id, Transport, SeqNr, Options) of
         {ok, Socket, NewSq} ->
             ok = Transport:setopts(Socket, [{active,once}]),
-            {noreply, State#state{
+            State#state{
                 seq_num = NewSq,
                 socket = Socket,
                 parser = esmpplib_stream_parser:new(maps:get(max_smpp_packet_size, Options)),
                 binding_timer = schedule_binding_timeout_check(Options)
-            }};
+            };
         _Error ->
-            case reconnect(State) of
-                {ok, NewState} ->
-                    {noreply, NewState};
-                Error ->
-                    {stop, Error, State}
-            end
-    end;
+            {ok, NewState} = reconnect(State),
+            NewState
+    end,
+    {noreply, NewState};
 handle_info(binding_timeout, #state{id = Id} = State) ->
     ?ERROR_MSG("connection_id: ~p binding timeout. reconnect ...", [Id]),
-    case reconnect(State) of
-        {ok, NewState} ->
-            {noreply, NewState};
-        Error ->
-            {stop, Error, State}
-    end;
+    {ok, NewState} = reconnect(State),
+    {noreply, NewState};
 handle_info(Info, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown info message: ~p", [Id, Info]),
     {noreply, State}.
@@ -336,6 +325,8 @@ handle_binding_response({CmdId, Status, _SeqNum, _Body}, #state{id = Id, options
         ?ESME_ROK ->
             BindingMode = cmd_resp_to_binding_mode(CmdId),
             ?INFO_MSG("connection_id: ~p binding completed -> mode: ~p", [Id, BindingMode]),
+
+            run_callback(on_connection_change_notification, 3, [Id, self(), true], Options),
 
             {ok, State#state {
                 binding_mode = BindingMode,
@@ -496,18 +487,27 @@ bind(Transport, Socket, SeqNum, Options) ->
     send_command(Transport, Socket, {CmdId, ?ESME_ROK, SeqNum, CmdOptions}).
 
 reconnect(#state{
+    id = Id,
     transport = Transport,
     socket = Socket,
     reply_map = ReplyMap,
     options = Options,
     reconnect_attempts = Attempts,
     enquire_link_timer = EqLinkTimer,
+    binding_mode = BindingMode,
     pending_requests_timeout_timer = PendingReqTimeoutRef } = State) ->
 
     close_socket(Transport, Socket),
     cancel_timer(EqLinkTimer),
     cancel_timer(PendingReqTimeoutRef),
     cleanup_reply_map(ReplyMap, {error, connection_lost}, Options),
+
+    case BindingMode of
+        undefined ->
+            ok;
+        _ ->
+            run_callback(on_connection_change_notification, 3, [Id, self(), false], Options)
+    end,
 
     schedule_reconnect(Attempts, Options),
     NewState = cleanup_state(State),
