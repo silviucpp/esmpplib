@@ -11,6 +11,7 @@ esmpplib is an SMPP client library for erlang.
 There are many erlang SMPP clients around, but after I analyzed some of those I found the following issues:
 
 - Some libraries are no longer maintained 
+- Lack of tests
 - Most of them have issues when they cut the message into multiple parts. This operation is not taking into account that chars can have multiple bytes, and they end by cutting in the middle of a certain char.
 - A mechanism for auto-reconnection and connection pool is not implemented.
 - Are not providing an easy-to-use API without exposing the entire SMPP complexity.
@@ -144,3 +145,6 @@ Using the `registered_delivery` parameter you can configure which delivery recei
 - `2#00000010`: Only the failure delivery receipts.
 - `2#00000011`: Only success delivery receipts.
 
+# Testing
+
+You can use `rebar3 eunit` to run the unit tests and `make ct` to run the common tests. Check `sys.config` from test folder to setup your own server.
