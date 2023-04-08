@@ -205,23 +205,15 @@ handle_cast(Request, State = #state{id = Id}) ->
     ?WARNING_MSG("connection_id: ~p unknown cast request: ~p", [Id, Request]),
     {noreply, State}.
 
-handle_info({SocketType, Socket, Data}, #state{id = Id, transport = Transport} = State) when SocketType == tcp orelse SocketType == ssl ->
+handle_info({SocketType, Socket, Data}, #state{transport = Transport} = State) when SocketType == tcp orelse SocketType == ssl ->
     ok = Transport:setopts(Socket, [{active,once}]),
-    case process_incoming_data(State, Data) of
-        {ok, NewState} ->
-            {noreply, NewState};
-        Error ->
-            ?ERROR_MSG("connection_id: ~p process_incoming_data failed with ~p", [Id, Error]),
-            {stop, Error, State}
-    end;
+    {noreply, process_incoming_data(State, Data)};
 handle_info({SocketClosedTag, Sock}, #state{id = Id, socket = Sock} = State) when ?IS_SOCKET_CLOSED_TAG(SocketClosedTag) ->
     ?WARNING_MSG("connection_id: ~p socket closed. reconnect ...", [Id]),
-    {ok, NewState} = reconnect(State),
-    {noreply, NewState};
+    {noreply, reconnect(State)};
 handle_info({SocketErrorTag, _, Reason}, #state{id = Id} = State) when ?IS_SOCKET_ERROR_TAG(SocketErrorTag) ->
     ?WARNING_MSG("connection_id: ~p socket error: ~p. reconnect ...", [Id, Reason]),
-    {ok, NewState} = reconnect(State),
-    {noreply, NewState};
+    {noreply, reconnect(State)};
 handle_info(pending_request_timeout_check, State) ->
     {noreply, check_requests_timeout(esmpplib_time:now_msec(), State)};
 handle_info(send_enquire_link, #state{transport = Transport, socket = Socket, seq_num = SeqNum, options = Options} = State) ->
@@ -238,14 +230,12 @@ handle_info(start_connection, #state{id = Id, transport = Transport, seq_num = S
                 binding_timer = schedule_binding_timeout_check(Options)
             };
         _Error ->
-            {ok, NewState} = reconnect(State),
-            NewState
+            reconnect(State)
     end,
     {noreply, NewState};
 handle_info(binding_timeout, #state{id = Id} = State) ->
     ?ERROR_MSG("connection_id: ~p binding timeout. reconnect ...", [Id]),
-    {ok, NewState} = reconnect(State),
-    {noreply, NewState};
+    {noreply, reconnect(State)};
 handle_info(Info, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown info message: ~p", [Id, Info]),
     {noreply, State}.
@@ -264,7 +254,7 @@ code_change(_OldVsn, State = #state{}, _Extra) ->
 process_incoming_data(#state{id = Id, parser = Parser} = State, Data) ->
     case esmpplib_stream_parser:parse(Parser, Data) of
         {ok, {CmdId, _Status, SeqNum, Body} = Pdu, NewParser} ->
-            {ok, NewState} = case CmdId of
+            NewState = case CmdId of
                 ?COMMAND_ID_SUBMIT_SM_RESP ->
                     handle_submit_sm_response(Pdu, State);
                 ?COMMAND_ID_DELIVER_SM ->
@@ -274,7 +264,7 @@ process_incoming_data(#state{id = Id, parser = Parser} = State, Data) ->
                 ?COMMAND_ID_ENQUIRE_LINK ->
                     handle_enquire_link_request(Pdu, State);
                 ?COMMAND_ID_ENQUIRE_LINK_RESP ->
-                    {ok, State};
+                    State;
                 BindCmd when ?IS_BIND_RESPONSE(BindCmd) ->
                     handle_binding_response(Pdu, State);
                 ?COMMAND_ID_UNBIND ->
@@ -282,24 +272,24 @@ process_incoming_data(#state{id = Id, parser = Parser} = State, Data) ->
                     send_command(Transport, Socket, {?COMMAND_ID_UNBIND_RESP, ?ESME_ROK, SeqNum, []}),
                     reconnect(State);
                 ?COMMAND_ID_UNBIND_RESP ->
-                    {ok, State};
+                    State;
                 ?COMMAND_ID_GENERIC_NACK ->
-                    {ok, State};
+                    State;
                 _ ->
                     ?WARNING_MSG("connection_id: ~p received unknown message: ~p", [Id, Pdu]),
                     #state{transport = Transport, socket = Socket} = State,
                     send_command(Transport, Socket, {?COMMAND_ID_GENERIC_NACK, ?ESME_RINVCMDID, SeqNum, Body}),
-                    {ok, State}
+                    State
             end,
 
             case NewState#state.socket of
                 undefined ->
-                    {ok, NewState};
+                    NewState;
                 _ ->
                     process_incoming_data(NewState#state{parser = NewParser}, <<>>)
             end;
         {more, NewParser} ->
-            {ok, State#state{parser = NewParser}};
+            State#state{parser = NewParser};
         {error, CmdId, Status, SeqNum} = P ->
             ?ERROR_MSG("connection_id: ~p invalid pdu packet: ~p. reconnect ...", [Id, P]),
             #state{transport = Transport, socket = Socket} = State,
@@ -328,12 +318,12 @@ handle_binding_response({CmdId, Status, _SeqNum, _Body}, #state{id = Id, options
 
             run_callback(on_connection_change_notification, 3, [Id, self(), true], Options),
 
-            {ok, State#state {
+            State#state {
                 binding_mode = BindingMode,
                 enquire_link_timer = schedule_enquire_link(Options),
                 binding_timer = undefined,
                 reconnect_attempts = 0
-            }};
+            };
         _ ->
             ?ERROR_MSG("connection_id: ~p failed to bind with error: (~p) ~p", [Id, Status, smpp_status2bin(Status)]),
             reconnect(State)
@@ -343,10 +333,10 @@ handle_enquire_link_request({CmdId, Status, SeqNum, _Body}, #state{id = Id, tran
     case BindingMode of
         undefined ->
             ?WARNING_MSG("connection_id: ~p received ENQUIRE_LINK in outbound state ...", [Id]),
-            {ok, State};
+            State;
         _ ->
             send_command(Transport, Socket, {?MAKE_RESPONSE(CmdId), Status, SeqNum, []}),
-            {ok, State}
+            State
     end.
 
 handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, pending_req_queue = PendingReqQueue, options = Options} = State) ->
@@ -370,9 +360,9 @@ handle_submit_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = Rep
                             run_callback(on_submit_sm_response_failed, 2, [MessageRef, ErrorMsg], Options)
                     end
             end,
-            {ok, State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)}};
+            State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)};
         _ ->
-            {ok, State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)}}
+            State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingReqQueue)}
     end.
 
 handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options = Options, transport = Transport, socket = Socket} = State) ->
@@ -408,10 +398,10 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
                             run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, null, null, DlrStatus, ErrorCode], Options)
                     end
             end,
-            {ok, State};
+            State;
         _ ->
             ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed status: ~p", [Id, {Status, smpp_status2bin(Status), SeqNum, Body}]),
-            {ok, State}
+            State
     end.
 
 handle_query_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = ReplyMap, options = Options, pending_req_queue = PendingRqQueue} = State) ->
@@ -441,9 +431,9 @@ handle_query_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = Repl
                             run_callback(on_query_sm_response, 2, [MessageId, false, ErrorMsg], Options)
                     end
             end,
-            {ok, State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)}};
+            State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)};
         _ ->
-            {ok, State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)}}
+            State#state{pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)}
     end.
 
 connect_and_bind(Id, Transport, SeqNum, Options) ->
@@ -511,7 +501,7 @@ reconnect(#state{
 
     schedule_reconnect(Attempts, Options),
     NewState = cleanup_state(State),
-    {ok, NewState#state{reconnect_attempts = Attempts+1}}.
+    NewState#state{reconnect_attempts = Attempts+1}.
 
 cleanup_state(#state{id = Id, transport = Transport, options = Options, reconnect_attempts = Rc}) ->
     #state{id = Id, transport = Transport, options = Options, reconnect_attempts = Rc}.
