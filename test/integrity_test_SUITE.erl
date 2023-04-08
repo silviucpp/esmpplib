@@ -51,13 +51,10 @@ on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) 
 
 on_connection_change_notification(Id, Pid, IsConnected) ->
     ?INFO_MSG("### on_connection_change_notification -> ~p", [[Id, Pid, IsConnected]]),
-    ect_config:set({Id, Pid, connection_status}, IsConnected).
+    ect_config:set({connection_status, Id, Pid}, IsConnected).
 
 sync_api_test(_Config) ->
-    ConnectionId = sync_api_test,
-    {ok, P} = new_connection(ConnectionId, #{callback_module => ?MODULE}),
-    ?assertEqual(ok , ect_utils:wait_for_config_value({ConnectionId, P, connection_status}, true)),
-    ?assertEqual({ok, true}, esmpplib_connection:is_connected(P)),
+    {ok, P} = new_connection(sync_api_test, #{callback_module => ?MODULE}),
 
     % send failed message
 
@@ -83,8 +80,7 @@ sync_api_test(_Config) ->
     ?assertEqual(<<"DELIVRD">>, Status),
     ?assertEqual(0, ErrorCode),
 
-    ok = esmpplib_connection:stop(P),
-    ok.
+    ok = esmpplib_connection:stop(P).
 
 % internals
 
@@ -98,4 +94,7 @@ new_connection(Id, Opts) ->
         system_id => ?USERNAME,
         password => ?PASSWORD
     },
-    esmpplib_connection:start_link(maps:merge(Config, Opts)).
+    {ok, P} = esmpplib_connection:start_link(maps:merge(Config, Opts)),
+    ?assertEqual(ok , ect_utils:wait_for_config_value({connection_status, Id, P}, true)),
+    ?assertEqual({ok, true}, esmpplib_connection:is_connected(P)),
+    {ok, P}.
