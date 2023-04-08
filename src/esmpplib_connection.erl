@@ -54,6 +54,7 @@
     query_sm/2,
     query_sm_async/2,
     is_connected/1,
+    stop/1,
 
     init/1,
     handle_call/3,
@@ -98,6 +99,9 @@ query_sm_async(Pid, MessageId) ->
 
 is_connected(Pid) ->
     esmpplib_utils:safe_call(Pid, is_connected).
+
+stop(Pid) ->
+    esmpplib_utils:safe_call(Pid, stop).
 
 % gen_server callbacks
 
@@ -211,6 +215,9 @@ handle_call({query_sm, MessageId, Async}, FromPid, #state{
     end;
 handle_call(is_connected, _From, #state{binding_mode = BindingMode} = State) ->
     {reply, {ok, BindingMode =/= undefined}, State};
+handle_call(stop, _From, #state{id = Id} = State) ->
+    ?INFO_MSG("connection_id: ~p received stop signal", [Id]),
+    {stop, normal, ok, State};
 handle_call(Request, _From, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown call request: ~p", [Id, Request]),
     {reply, ok, State}.
