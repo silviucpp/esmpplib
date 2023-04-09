@@ -66,13 +66,13 @@ submit_sm_sync_test(_Config) ->
 
     % send failed message
 
-    {error, Reason} = esmpplib_connection:submit_sm(P, <<"INFO">>, <<"">>, <<"invalid message">>),
+    {error, Reason} = esmpplib_connection:submit_sm(P, ect_config:get(src_number), <<"">>, <<"invalid message">>),
     ?assertEqual({submit_failed, ?ESME_RINVDSTADR, <<"ESME_RINVDSTADR">>}, Reason),
 
     % send message successful
 
-    Src = <<"INFO">>,
-    Dst = <<"40743616112">>,
+    Src = ect_config:get(src_number),
+    Dst = ect_config:get(dst_number),
     {ok, MessageId, PartsNumber} = esmpplib_connection:submit_sm(P, Src, Dst, <<"hello world!">>),
     ?assertEqual(true, is_binary(MessageId)),
     ?assertEqual(1, PartsNumber),
@@ -89,15 +89,15 @@ submit_sm_async_test(_Config) ->
     % send failed message
 
     MessageRef = make_ref(),
-    ?assertEqual(ok, esmpplib_connection:submit_sm_async(P, MessageRef, <<"INFO">>, <<"">>, <<"invalid message">>)),
+    ?assertEqual(ok, esmpplib_connection:submit_sm_async(P, MessageRef, ect_config:get(src_number), <<"">>, <<"invalid message">>)),
     ?assertEqual(ok, ect_utils:wait_for_config_is_set({on_submit_sm_response_failed, MessageRef})),
     ?assertEqual({error, {submit_failed, ?ESME_RINVDSTADR, <<"ESME_RINVDSTADR">>}}, ect_config:get({on_submit_sm_response_failed, MessageRef})),
 
     % send message successful
 
     MessageRef2 = make_ref(),
-    Src = <<"INFO">>,
-    Dst = <<"40743616112">>,
+    Src = ect_config:get(src_number),
+    Dst = ect_config:get(dst_number),
     ?assertEqual(ok, esmpplib_connection:submit_sm_async(P, MessageRef2, Src, Dst, <<"hello world">>)),
     ?assertEqual(ok, ect_utils:wait_for_config_is_set({on_submit_sm_response_successful, MessageRef2})),
     [MessageId, NrParts] = ect_config:get({on_submit_sm_response_successful, MessageRef2}),
@@ -115,8 +115,8 @@ multi_part_messages_test(_Config) ->
 
     % send message successful -> sync
 
-    Src = <<"INFO">>,
-    Dst = <<"40743616112">>,
+    Src = ect_config:get(src_number),
+    Dst = ect_config:get(dst_number),
     Msg = <<"123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456|">>,
     MsgUcs2 = <<"`123456789`123456789`123456789`123456789`123456789`123456789`12345678s`">>,
 
@@ -143,8 +143,8 @@ multi_part_messages_test(_Config) ->
 query_sm_test(_Config) ->
     {ok, P} = new_connection(multi_part_messages_test, #{callback_module => ?MODULE}),
 
-    Src = <<"INFO">>,
-    Dst = <<"40743616112">>,
+    Src = ect_config:get(src_number),
+    Dst = ect_config:get(dst_number),
     Msg = <<"hello world">>,
 
     {ok, MessageId, PartsNumber} = esmpplib_connection:submit_sm(P, Src, Dst, Msg),
@@ -163,7 +163,12 @@ query_sm_test(_Config) ->
         false ->
             ?assertEqual({error,{query_failed, ?ESME_RQUERYFAIL, <<"ESME_RQUERYFAIL">>}}, Result);
         _ ->
-            ?assertEqual(false, Result)
+            ?assertMatch({ok, _}, Result),
+            {ok, R} = Result,
+            ?assertEqual(MessageId, esmpplib_utils:lookup(message_id, R)),
+            ?assertEqual(<<"DELIVRD">>, esmpplib_utils:lookup(message_state, R)),
+            ?assertEqual(true, is_integer(esmpplib_utils:lookup(final_date, R))),
+            ?assertEqual(0, esmpplib_utils:lookup(error_code, R))
     end,
 
     % query_sm async
@@ -175,7 +180,13 @@ query_sm_test(_Config) ->
         false ->
             ?assertEqual([false, {error,{query_failed, ?ESME_RQUERYFAIL, <<"ESME_RQUERYFAIL">>}}], ect_config:get({query_sm_resp, MessageId}));
         _ ->
-            ?assertEqual(false, ect_config:get({query_sm_resp, MessageId}))
+            Result2 = ect_config:get({query_sm_resp, MessageId}),
+            ?assertMatch([true, _], Result2),
+            [true, R2] = Result2,
+            ?assertEqual(MessageId, esmpplib_utils:lookup(message_id, R2)),
+            ?assertEqual(<<"DELIVRD">>, esmpplib_utils:lookup(message_state, R2)),
+            ?assertEqual(true, is_integer(esmpplib_utils:lookup(final_date, R2))),
+            ?assertEqual(0, esmpplib_utils:lookup(error_code, R2))
     end,
 
     ok = esmpplib_connection:stop(P).
