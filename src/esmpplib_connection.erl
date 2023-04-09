@@ -449,7 +449,7 @@ handle_query_sm_response({_CmdId, Status, SeqNum, Body}, #state{reply_map = Repl
                         false ->
                             gen_server:reply(FromPid, ErrorMsg);
                         _ ->
-                            run_callback(on_query_sm_response, 2, [MessageId, false, ErrorMsg], Options)
+                            run_callback(on_query_sm_response, 3, [MessageId, false, ErrorMsg], Options)
                     end
             end,
             State#state{reply_map = NewReplyMap, pending_req_queue = esmpplib_pending_request_queue:ack(SeqNum, PendingRqQueue)};
