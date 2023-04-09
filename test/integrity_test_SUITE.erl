@@ -4,13 +4,6 @@
 -include_lib("smpp_parser/src/smpp_base.hrl").
 -include("esmpplib.hrl").
 
--define(HOST, "smscsim.smpp.org").
--define(PORT, 2775).
--define(TRANSPORT, tcp).
--define(INTERFACE_VERSION, <<"5.0">>).
--define(USERNAME, <<"username">>).
--define(PASSWORD, <<"password">>).
-
 -behavior(esmpplib_connection).
 
 -compile(export_all).
@@ -23,7 +16,8 @@ groups() -> [
     {integrity_test, [sequence], [
         submit_sm_sync_test,
         submit_sm_async_test,
-        multi_part_messages_test
+        multi_part_messages_test,
+        query_sm_test
     ]}
 ].
 
@@ -33,7 +27,15 @@ suite() ->
 init_per_suite(Config) ->
     application:ensure_all_started(esmpplib),
     ok = ect_config:start(),
-    {ok, _} = ect_event_manager:start_link(),
+
+    CtTests = esmpplib_utils:get_env(ct_tests),
+    ok = lists:foreach(fun({K, V}) -> ect_config:set(K, V) end, CtTests),
+
+    Pools = esmpplib_utils:get_env(pools),
+    CtPool = esmpplib_utils:lookup(ct_pool, Pools),
+    Options = esmpplib_utils:lookup(connection_options, CtPool),
+    ok = ect_config:set(connection_options, Options),
+
     Config.
 
 end_per_suite(_Config) ->
@@ -51,6 +53,10 @@ on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) 
     ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode]]),
     ect_config:set({dlr,MessageId}, [From, To, SubmitDate, DlrDate, Status, ErrorCode]).
 
+on_query_sm_response(MessageId, Success, Response) ->
+    ?INFO_MSG("### on_query_sm_response -> ~p", [[MessageId, Success, Response]]),
+    ect_config:set({query_sm_resp,MessageId}, [Success, Response]).
+
 on_connection_change_notification(Id, Pid, IsConnected) ->
     ?INFO_MSG("### on_connection_change_notification -> ~p", [[Id, Pid, IsConnected]]),
     ect_config:set({connection_status, Id, Pid}, IsConnected).
@@ -66,7 +72,7 @@ submit_sm_sync_test(_Config) ->
     % send message successful
 
     Src = <<"INFO">>,
-    Dst = <<"1234567890">>,
+    Dst = <<"40743616112">>,
     {ok, MessageId, PartsNumber} = esmpplib_connection:submit_sm(P, Src, Dst, <<"hello world!">>),
     ?assertEqual(true, is_binary(MessageId)),
     ?assertEqual(1, PartsNumber),
@@ -91,7 +97,7 @@ submit_sm_async_test(_Config) ->
 
     MessageRef2 = make_ref(),
     Src = <<"INFO">>,
-    Dst = <<"1234567890">>,
+    Dst = <<"40743616112">>,
     ?assertEqual(ok, esmpplib_connection:submit_sm_async(P, MessageRef2, Src, Dst, <<"hello world">>)),
     ?assertEqual(ok, ect_utils:wait_for_config_is_set({on_submit_sm_response_successful, MessageRef2})),
     [MessageId, NrParts] = ect_config:get({on_submit_sm_response_successful, MessageRef2}),
@@ -110,7 +116,7 @@ multi_part_messages_test(_Config) ->
     % send message successful -> sync
 
     Src = <<"INFO">>,
-    Dst = <<"1234567890">>,
+    Dst = <<"40743616112">>,
     Msg = <<"123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456789123456|">>,
     MsgUcs2 = <<"`123456789`123456789`123456789`123456789`123456789`123456789`12345678s`">>,
 
@@ -134,6 +140,46 @@ multi_part_messages_test(_Config) ->
 
     ok = esmpplib_connection:stop(P).
 
+query_sm_test(_Config) ->
+    {ok, P} = new_connection(multi_part_messages_test, #{callback_module => ?MODULE}),
+
+    Src = <<"INFO">>,
+    Dst = <<"40743616112">>,
+    Msg = <<"hello world">>,
+
+    {ok, MessageId, PartsNumber} = esmpplib_connection:submit_sm(P, Src, Dst, Msg),
+    ?assertEqual(true, is_binary(MessageId)),
+    ?assertEqual(1, PartsNumber),
+
+    check_dlr(MessageId, Src, Dst),
+
+    % query_sm sync
+
+    QuerySMSupported = ect_config:get(query_sm_supported),
+
+    Result = esmpplib_connection:query_sm(P, MessageId),
+
+    case QuerySMSupported of
+        false ->
+            ?assertEqual({error,{query_failed, ?ESME_RQUERYFAIL, <<"ESME_RQUERYFAIL">>}}, Result);
+        _ ->
+            ?assertEqual(false, Result)
+    end,
+
+    % query_sm async
+
+    ?assertEqual(ok, esmpplib_connection:query_sm_async(P, MessageId)),
+    ?assertEqual(ok, ect_utils:wait_for_config_is_set({query_sm_resp, MessageId})),
+
+    case QuerySMSupported of
+        false ->
+            ?assertEqual([false, {error,{query_failed, ?ESME_RQUERYFAIL, <<"ESME_RQUERYFAIL">>}}], ect_config:get({query_sm_resp, MessageId}));
+        _ ->
+            ?assertEqual(false, ect_config:get({query_sm_resp, MessageId}))
+    end,
+
+    ok = esmpplib_connection:stop(P).
+
 % internals
 
 check_dlr(MessageId, Src, Dst) ->
@@ -146,18 +192,9 @@ check_dlr(MessageId, Src, Dst) ->
     ?assertEqual(<<"DELIVRD">>, Status),
     ?assertEqual(0, ErrorCode).
 
-
 new_connection(Id, Opts) ->
-    Config = #{
-        id => Id,
-        host => ?HOST,
-        port => ?PORT,
-        transport => ?TRANSPORT,
-        interface_version => ?INTERFACE_VERSION,
-        system_id => ?USERNAME,
-        password => ?PASSWORD
-    },
-    {ok, P} = esmpplib_connection:start_link(maps:merge(Config, Opts)),
+    BaseOtions = maps:from_list([{id, Id}|ect_config:get(connection_options)]),
+    {ok, P} = esmpplib_connection:start_link(maps:merge(BaseOtions, Opts)),
     ?assertEqual(ok , ect_utils:wait_for_config_value({connection_status, Id, P}, true)),
     ?assertEqual({ok, true}, esmpplib_connection:is_connected(P)),
     {ok, P}.
