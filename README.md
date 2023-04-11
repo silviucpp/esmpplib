@@ -97,6 +97,12 @@ on_submit_sm_response_failed(MessageRef, Error) ->
 
 on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) ->
     ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode]]).
+
+on_query_sm_response(MessageId, Success, Response) ->
+    ?INFO_MSG("### on_query_sm_response -> ~p", [[MessageId, Success, Response]]).
+
+on_connection_change_notification(Id, Pid, IsConnected) ->
+    ?INFO_MSG("### on_connection_change_notification -> ~p", [[Id, Pid, IsConnected]]).
 ```
 
 ### Config
