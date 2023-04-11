@@ -57,6 +57,7 @@ You can use the `esmpplib_connection` in case you don't want to  use the connect
     {pools, [
         {my_pool, [
             {size, 2},
+            {active, true},
             {connection_options, [
                 {host, {127,0,0,1}},
                 {port, 2775},
@@ -70,6 +71,10 @@ You can use the `esmpplib_connection` in case you don't want to  use the connect
     ]}
 ]}
 ```
+
+ - `size` - Pool size (number of connections)
+ - `active` - Pool is active or not. In case is not active is not created. Default to `true`.
+ - `connection_options` - Connection options. Described above.
 
 ### Example
 
