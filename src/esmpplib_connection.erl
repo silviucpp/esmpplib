@@ -30,7 +30,7 @@
 -callback on_submit_sm_response_failed(MessageRef::any(), Error::any()) ->
     any().
 
--callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::timestamp(), DoneDate::timestamp(), Status::msg_status(), ErrorCode::non_neg_integer()) ->
+-callback on_delivery_report(MessageId::binary(), SrcAddress::binary(), DstAddress::binary(), SubmitDate::timestamp(), DoneDate::timestamp(), Status::msg_status(), ErrorCode::non_neg_integer(), Args::any()) ->
     any().
 
 -callback on_query_sm_response(MessageId::binary(), Success::boolean(), Response::[{any(), any()}]|{error, reason()}) ->
@@ -42,7 +42,7 @@
 -optional_callbacks([
     on_submit_sm_response_successful/3,
     on_submit_sm_response_failed/2,
-    on_delivery_report/7,
+    on_delivery_report/8,
     on_query_sm_response/3,
     on_connection_change_notification/3
 ]).
@@ -403,12 +403,14 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
                     SubmitDate = dlr_datetime2ts(SubmitDate0),
                     DoneDate = dlr_datetime2ts(DlrDate0),
                     ErrorCode = esmpplib_utils:safe_bin2int({Id, <<"err">>}, ErrorCode0, 0),
-                    run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, SubmitDate, DoneDate, DlrStatus, ErrorCode], Options);
+                    DlrArgs = maps:get(delivery_reports_args, Options, undefined),
+                    run_callback(on_delivery_report, 8, [MessageId, SourceAddress, DestinationAddress, SubmitDate, DoneDate, DlrStatus, ErrorCode, DlrArgs], Options);
                 _ ->
                     case esmpplib_utils:lookup(receipted_message_id, Body) of
                         undefined ->
                             ?ERROR_MSG("connection_id: ~p handle_deliver_sm_request failed to parse: ~p and receipted_message_id is missing.", [Id, Message]);
                         MessageId ->
+                            DlrArgs = maps:get(delivery_reports_args, Options, undefined),
                             DlrStatus = esmpplib_msg_status:to_string(esmpplib_utils:lookup(message_state, Body, ?MESSAGE_STATE_UNKNOWN)),
                             ErrorCode = case esmpplib_utils:lookup(network_error_code, Body) of
                                 #network_error_code{error = Code} ->
@@ -416,7 +418,7 @@ handle_deliver_sm_request({CmdId, Status, SeqNum, Body}, #state{id = Id, options
                                 _ ->
                                     0
                             end,
-                            run_callback(on_delivery_report, 7, [MessageId, SourceAddress, DestinationAddress, null, null, DlrStatus, ErrorCode], Options)
+                            run_callback(on_delivery_report, 8, [MessageId, SourceAddress, DestinationAddress, null, null, DlrStatus, ErrorCode, DlrArgs], Options)
                     end
             end,
             State;

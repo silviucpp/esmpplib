@@ -100,8 +100,8 @@ on_submit_sm_response_successful(MessageRef, MessageId, NrParts) ->
 on_submit_sm_response_failed(MessageRef, Error) ->
     ?INFO_MSG("### on_submit_sm_response_failed -> ~p", [[MessageRef, Error]]).
 
-on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) ->
-    ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode]]).
+on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode, Args) ->
+    ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode, Args]]).
 
 on_query_sm_response(MessageId, Success, Response) ->
     ?INFO_MSG("### on_query_sm_response -> ~p", [[MessageId, Success, Response]]).
@@ -132,6 +132,7 @@ The supported `connection_options` configs are:
 - `data_coding` - The charset used to encode the messages. Default alphabet assumed (`2#00000000`). See the `Available Encoding scheme` section below for all supported values.
 - `callback_module` - (`undefined`). The application module that implements the `esmpplib_connection` behaviour, where to receive callbacks for certain events (delivery receipts or responses for async requests).
 - `registered_delivery` - Allows you to specify what delivery receipts should be sent. Default to `2#00000001` (all receipts). See `Delivery Receipts` section below. 
+- `delivery_reports_args` - User parameters to be sent with delivery report callbacks as last argument (`Args` from `on_delivery_report`). 
 
 ##### Notes
 

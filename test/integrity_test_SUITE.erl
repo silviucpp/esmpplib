@@ -49,9 +49,9 @@ on_submit_sm_response_failed(MessageRef, Error) ->
     ?INFO_MSG("### on_submit_sm_response_failed -> ~p", [[MessageRef, Error]]),
     ect_config:set({on_submit_sm_response_failed, MessageRef}, Error).
 
-on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode) ->
-    ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode]]),
-    ect_config:set({dlr,MessageId}, [From, To, SubmitDate, DlrDate, Status, ErrorCode]).
+on_delivery_report(MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode, Args) ->
+    ?INFO_MSG("### on_delivery_report -> ~p", [[MessageId, From, To, SubmitDate, DlrDate, Status, ErrorCode, Args]]),
+    ect_config:set({dlr,MessageId}, [From, To, SubmitDate, DlrDate, Status, ErrorCode, Args]).
 
 on_query_sm_response(MessageId, Success, Response) ->
     ?INFO_MSG("### on_query_sm_response -> ~p", [[MessageId, Success, Response]]),
@@ -195,12 +195,13 @@ query_sm_test(_Config) ->
 
 check_dlr(MessageId, Src, Dst) ->
     ?assertEqual(ok, ect_utils:wait_for_config_is_set({dlr, MessageId})),
-    [From, To, SubmitDate, DoneDate, Status, ErrorCode] = ect_config:get({dlr, MessageId}),
+    [From, To, SubmitDate, DoneDate, Status, ErrorCode, Args] = ect_config:get({dlr, MessageId}),
     ?assertEqual(From, Src),
     ?assertEqual(To, Dst),
     ?assertEqual(true, is_integer(SubmitDate)),
     ?assertEqual(true, is_integer(DoneDate)),
     ?assertEqual(<<"DELIVRD">>, Status),
+    ?assertEqual(undefined, Args),
     ?assertEqual(0, ErrorCode).
 
 new_connection(Id, Opts) ->
