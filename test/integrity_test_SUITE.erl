@@ -17,7 +17,8 @@ groups() -> [
         submit_sm_sync_test,
         submit_sm_async_test,
         multi_part_messages_test,
-        query_sm_test
+        query_sm_test,
+        connection_pool_sys_config_test
     ]}
 ].
 
@@ -190,6 +191,25 @@ query_sm_test(_Config) ->
     end,
 
     ok = esmpplib_connection:stop(P).
+
+connection_pool_sys_config_test(_Config) ->
+    % send failed message
+
+    {error, Reason} = esmpplib:submit_sm(ct_pool, ect_config:get(src_number), <<"">>, <<"invalid message">>),
+    ?assertEqual({submit_failed, ?ESME_RINVDSTADR, <<"ESME_RINVDSTADR">>}, Reason),
+
+    % send message successful
+
+    Src = ect_config:get(src_number),
+    Dst = ect_config:get(dst_number),
+    {ok, MessageId, PartsNumber} = esmpplib:submit_sm(ct_pool, Src, Dst, <<"hello world!">>),
+    ?assertEqual(true, is_binary(MessageId)),
+    ?assertEqual(1, PartsNumber),
+
+    % check dlr
+
+    check_dlr(MessageId, Src, Dst),
+    ok.
 
 % internals
 
