@@ -106,6 +106,8 @@ stop(Pid) ->
 % gen_server callbacks
 
 init(Options0) ->
+    process_flag(trap_exit, true),
+
     Options = maps:merge(default_options(), Options0),
 
     case maps:get(callback_module, Options) of
