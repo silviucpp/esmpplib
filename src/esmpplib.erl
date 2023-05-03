@@ -6,6 +6,9 @@
     start/0,
     start/1,
     stop/0,
+
+    start_pool/2,
+    stop_pool/1,
     restart_pool/1,
 
     submit_sm/4,
@@ -36,6 +39,27 @@ start(Type) ->
 
 stop() ->
     application:stop(esmpplib).
+
+-spec start_pool(atom(), [term()]) ->
+    ok | {error, reason()}.
+
+start_pool(PoolName, PoolConfig) ->
+    PoolSize = esmpplib_utils:lookup(size, PoolConfig, 1),
+    ConnectionOptions0 = maps:from_list(esmpplib_utils:lookup(connection_options, PoolConfig)),
+    ConnectionOptions = maps:put(id, PoolName, ConnectionOptions0),
+
+    erlpool:start_pool(PoolName, [
+        {size, PoolSize},
+        {supervisor_shutdown, 10000},
+        {group, esmpplib_connection_pool},
+        {start_mfa, {esmpplib_connection, start_link, [ConnectionOptions]}}
+    ]).
+
+-spec stop_pool(atom()) ->
+    ok | {error, reason()}.
+
+stop_pool(PoolName) ->
+    erlpool:stop_pool(PoolName).
 
 -spec restart_pool(atom()) ->
     ok | {error, reason()}.
