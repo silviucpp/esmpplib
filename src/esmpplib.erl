@@ -10,6 +10,7 @@
     start_pool/2,
     stop_pool/1,
     restart_pool/1,
+    pool_connection_pids/1,
 
     submit_sm/4,
     submit_sm_async/5,
@@ -69,6 +70,12 @@ restart_pool(PoolName) ->
 
 -spec submit_sm(atom(), binary(), binary(), binary()) ->
     {ok, MessageId::binary(), Parts::non_neg_integer()} | {error, reason()}.
+
+-spec pool_connection_pids(atom()) ->
+    [pid()] | {error, any()}.
+
+pool_connection_pids(PoolName) ->
+    erlpool:map(PoolName, fun(P) -> P end).
 
 submit_sm(PoolName, SrcAddr, DstAddr, Message) ->
     Pid = erlpool:pid(PoolName),

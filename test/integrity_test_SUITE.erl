@@ -18,7 +18,8 @@ groups() -> [
         submit_sm_async_test,
         multi_part_messages_test,
         query_sm_test,
-        connection_pool_sys_config_test
+        connection_pool_sys_config_test,
+        connection_pool_runtime
     ]}
 ].
 
@@ -193,25 +194,43 @@ query_sm_test(_Config) ->
     ok = esmpplib_connection:stop(P).
 
 connection_pool_sys_config_test(_Config) ->
+    test_pool(ct_pool).
+
+connection_pool_runtime(_Config) ->
+    Opts = [
+        {size, 1},
+        {connection_options, ect_config:get(connection_options)}
+    ],
+    ?assertEqual(ok, esmpplib:start_pool(pool1, Opts)),
+    test_pool(pool1),
+    ?assertEqual(ok, esmpplib:stop_pool(pool1)).
+
+% internals
+
+test_pool(Name) ->
+    ConnectionsPids = esmpplib:pool_connection_pids(Name),
+
+    ok = lists:foreach(fun(P) ->
+        ?assertEqual(ok , ect_utils:wait_for_config_value({connection_status, Name, P}, true)),
+        ?assertEqual({ok, true}, esmpplib_connection:is_connected(P))
+    end, ConnectionsPids),
+
     % send failed message
 
-    {error, Reason} = esmpplib:submit_sm(ct_pool, ect_config:get(src_number), <<"">>, <<"invalid message">>),
+    {error, Reason} = esmpplib:submit_sm(Name, ect_config:get(src_number), <<"">>, <<"invalid message">>),
     ?assertEqual({submit_failed, ?ESME_RINVDSTADR, <<"ESME_RINVDSTADR">>}, Reason),
 
     % send message successful
 
     Src = ect_config:get(src_number),
     Dst = ect_config:get(dst_number),
-    {ok, MessageId, PartsNumber} = esmpplib:submit_sm(ct_pool, Src, Dst, <<"hello world!">>),
+    {ok, MessageId, PartsNumber} = esmpplib:submit_sm(Name, Src, Dst, <<"hello world!">>),
     ?assertEqual(true, is_binary(MessageId)),
     ?assertEqual(1, PartsNumber),
 
     % check dlr
 
-    check_dlr(MessageId, Src, Dst),
-    ok.
-
-% internals
+    check_dlr(MessageId, Src, Dst).
 
 check_dlr(MessageId, Src, Dst) ->
     ?assertEqual(ok, ect_utils:wait_for_config_is_set({dlr, MessageId})),
