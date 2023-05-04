@@ -263,16 +263,45 @@ handle_info(Info, #state{id = Id} = State) ->
     ?WARNING_MSG("connection_id: ~p unknown info message: ~p", [Id, Info]),
     {noreply, State}.
 
-terminate(Reason, #state{id = Id, transport = Transport, socket = Socket, reply_map = ReplyMap, options = Options}) ->
+terminate(Reason, #state{id = Id, transport = Transport, socket = Socket, reply_map = ReplyMap, options = Options} = State) ->
     ?INFO_MSG("connection_id: ~p terminate with reason: ~p", [Id, Reason]),
-    close_socket(Transport, Socket),
-    cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options),
+
+    case maps:get(shutdown_wait_pending_requests, Options, true) of
+        true ->
+            wait_all_events(State),
+            close_socket(Transport, Socket);
+        _ ->
+            close_socket(Transport, Socket),
+            cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options)
+    end,
     ok.
 
 code_change(_OldVsn, State = #state{}, _Extra) ->
     {ok, State}.
 
 % internals
+
+wait_all_events(#state{id = Id, socket = Socket, transport = Transport, reply_map = ReplyMap, options = Options} = State) ->
+    case maps:size(ReplyMap) of
+        0 ->
+            ?INFO_MSG("wait all pending requests completed ...", []),
+            ok;
+        _ ->
+            receive
+                {SocketType, Socket, Data} when SocketType == tcp orelse SocketType == ssl ->
+                    ok = Transport:setopts(Socket, [{active,once}]),
+                    wait_all_events(process_incoming_data(State, Data));
+                {SocketClosedTag, Socket} when ?IS_SOCKET_CLOSED_TAG(SocketClosedTag) ->
+                    ?WARNING_MSG("connection_id: ~p socket closed.", [Id]),
+                    cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options);
+                {SocketErrorTag, _, Reason} when ?IS_SOCKET_ERROR_TAG(SocketErrorTag) ->
+                    ?WARNING_MSG("connection_id: ~p socket error: ~p. ", [Id, Reason]),
+                    cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options)
+            after 9000 ->
+                ?WARNING_MSG("connection_id: ~p waiting events time out ...", [Id]),
+                cleanup_reply_map(ReplyMap, {error, shutdown_connection}, Options)
+            end
+    end.
 
 process_incoming_data(#state{id = Id, parser = Parser} = State, Data) ->
     case esmpplib_stream_parser:parse(Parser, Data) of

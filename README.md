@@ -133,6 +133,7 @@ The supported `connection_options` configs are:
 - `callback_module` - (`undefined`). The application module that implements the `esmpplib_connection` behaviour, where to receive callbacks for certain events (delivery receipts or responses for async requests).
 - `registered_delivery` - Allows you to specify what delivery receipts should be sent. Default to `2#00000001` (all receipts). See `Delivery Receipts` section below. 
 - `delivery_reports_args` - User parameters to be sent with delivery report callbacks as last argument (`Args` from `on_delivery_report`). 
+- `shutdown_wait_pending_requests` - When closed the connection is waiting around 10 seconds for all pending messages to complete before closing. (default to `true`).
 
 ##### Notes
 
