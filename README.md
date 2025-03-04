@@ -1,10 +1,9 @@
-esmpplib
-=======
+# esmpplib
 
-[![Build Status](https://travis-ci.com/silviucpp/esmpplib.svg?branch=master)](https://travis-ci.com/github/silviucpp/esmpplib)
+[![Build Status](https://app.travis-ci.com/silviucpp/esmpplib.svg?branch=master)](https://travis-ci.com/github/silviucpp/esmpplib)
 [![GitHub](https://img.shields.io/github/license/silviucpp/esmpplib)](https://github.com/silviucpp/esmpplib/blob/master/LICENSE)
 
-esmpplib is an SMPP client library for erlang.  
+`esmpplib` is an SMPP client library for erlang.  
 
 # Motivation
 
